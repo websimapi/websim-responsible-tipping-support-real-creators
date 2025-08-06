@@ -6,7 +6,9 @@ class ResponsibleTippingFinder {
         this.isScanning = false; // New: Track scanning state
         this.searchOffset = 0; // New: Track search progression
         this.displayedProjectIds = new Set(); // New: Track displayed projects
+        this.searchedCombinations = new Set(); // New: Track searched combinations
         this.pageSize = 12; // New: Projects per "page"
+        this.currentSearchStrategy = 0; // New: Current search strategy index
         this.init();
     }
 
@@ -57,46 +59,189 @@ class ResponsibleTippingFinder {
         }
     }
 
-    // New: Search a batch of projects
+    // New: Search a batch of projects with guaranteed uniqueness
     async searchBatch() {
         const batchSize = 25;
-        const searchTerms = ['game', 'art', 'tool', 'creative', 'portfolio', 'demo', 'experiment', 'design', 'simulator', 'fun', 'interactive', 'visual', 'cool', 'amazing', 'awesome'];
+        let searchAttempts = 0;
+        let searchExecuted = false;
         
-        // Rotate through search terms
-        const termIndex = Math.floor(this.searchOffset / 2) % searchTerms.length;
-        const term = searchTerms[termIndex];
-        
-        try {
-            // Try different feed types
-            const feedTypes = ['newest', 'best', 'hot'];
-            const feedType = feedTypes[this.searchOffset % feedTypes.length];
+        // Keep trying different search combinations until we find one we haven't used
+        while (!searchExecuted && searchAttempts < 20) {
+            const searchConfig = this.generateUniqueSearchConfig();
+            const searchKey = this.getSearchKey(searchConfig);
             
-            let response;
-            if (this.searchOffset % 4 === 0) {
-                // Every 4th search, use trending
-                response = await fetch(`/api/v1/feed/trending?limit=${batchSize}&offset=${Math.floor(this.searchOffset / 4) * batchSize}`);
-            } else {
-                response = await fetch(`/api/v1/feed/search/${feedType}/${term}?limit=${batchSize}&offset=${Math.floor(this.searchOffset / 3) * batchSize}`);
+            // Skip if we've already searched this combination
+            if (this.searchedCombinations.has(searchKey)) {
+                searchAttempts++;
+                this.currentSearchStrategy++;
+                continue;
             }
             
-            const data = await response.json();
-            const newProjects = data.feed?.data || [];
-            
-            console.log(`Batch ${this.searchOffset}: Found ${newProjects.length} projects with term "${term}" (${feedType})`);
-            
-            // Filter this batch
-            for (const projectData of newProjects) {
-                if (!this.displayedProjectIds.has(projectData.project?.id) && await this.isDeservingProject(projectData)) {
-                    this.projectQueue.push(projectData);
-                    console.log(`✅ Found deserving project: ${projectData.project.title}`);
+            try {
+                // Mark this combination as searched
+                this.searchedCombinations.add(searchKey);
+                
+                let response;
+                
+                if (searchConfig.type === 'trending') {
+                    response = await fetch(`/api/v1/feed/trending?limit=${batchSize}&offset=${searchConfig.offset}&feed=${searchConfig.feed}`);
+                } else if (searchConfig.type === 'search') {
+                    response = await fetch(`/api/v1/feed/search/${searchConfig.sort}/${searchConfig.term}?limit=${batchSize}&offset=${searchConfig.offset}`);
+                } else if (searchConfig.type === 'posts') {
+                    response = await fetch(`/api/v1/feed/posts?limit=${batchSize}&offset=${searchConfig.offset}&sort=${searchConfig.sort}`);
                 }
+                
+                if (!response.ok) {
+                    console.log(`Search failed for ${searchKey}, trying next...`);
+                    searchAttempts++;
+                    continue;
+                }
+                
+                const data = await response.json();
+                const newProjects = data.feed?.data || data.comments?.data || [];
+                
+                console.log(`Batch ${this.searchOffset}: Found ${newProjects.length} projects with config: ${searchKey}`);
+                
+                // Filter this batch
+                let newProjectsAdded = 0;
+                for (const projectData of newProjects) {
+                    // Handle different data structures
+                    const project = projectData.project || projectData.comment?.card_data?.project;
+                    const site = projectData.site || projectData.comment?.card_data?.site;
+                    
+                    if (project && !this.displayedProjectIds.has(project.id)) {
+                        const fullProjectData = { project, site, ...projectData };
+                        if (await this.isDeservingProject(fullProjectData)) {
+                            this.projectQueue.push(fullProjectData);
+                            newProjectsAdded++;
+                            console.log(`✅ Found deserving project: ${project.title}`);
+                        }
+                    }
+                }
+                
+                console.log(`Added ${newProjectsAdded} new deserving projects to queue`);
+                this.searchOffset++;
+                searchExecuted = true;
+                
+            } catch (error) {
+                console.error(`Error in search batch for ${searchKey}:`, error);
+                searchAttempts++;
             }
-            
-            this.searchOffset++;
-            
-        } catch (error) {
-            console.error('Error in search batch:', error);
         }
+        
+        // If we couldn't find any unique searches, expand our search space
+        if (!searchExecuted) {
+            console.log('🔄 Expanding search space - all combinations exhausted');
+            this.expandSearchSpace();
+        }
+    }
+
+    // New: Generate a unique search configuration
+    generateUniqueSearchConfig() {
+        const searchTerms = [
+            'game', 'art', 'tool', 'creative', 'portfolio', 'demo', 'experiment', 'design', 
+            'simulator', 'fun', 'interactive', 'visual', 'cool', 'amazing', 'awesome', 'app',
+            'website', 'animation', 'music', 'code', 'learn', 'tutorial', 'educational',
+            'dashboard', 'generator', 'calculator', 'beautiful', 'simple', 'useful', 'build',
+            'create', 'make', 'play', 'test', 'try', 'new', 'fresh', 'unique', 'original',
+            'custom', 'personal', 'project', 'work', 'showcase', 'display', 'present',
+            'share', 'explore', 'discover', 'find', 'search', 'browse', 'view', 'see'
+        ];
+        
+        const feedTypes = ['newest', 'best', 'hot'];
+        const trendingFeeds = ['new', 'top', 'hot', 'engaging', 'viral', 'recommended'];
+        const postSorts = ['for_you', 'following', 'latest'];
+        
+        const strategy = this.currentSearchStrategy % 6;
+        
+        switch (strategy) {
+            case 0: // Search with terms
+                return {
+                    type: 'search',
+                    term: searchTerms[this.currentSearchStrategy % searchTerms.length],
+                    sort: feedTypes[Math.floor(this.currentSearchStrategy / searchTerms.length) % feedTypes.length],
+                    offset: Math.floor(this.currentSearchStrategy / (searchTerms.length * feedTypes.length)) * 25
+                };
+                
+            case 1: // Trending feed
+                return {
+                    type: 'trending',
+                    feed: trendingFeeds[this.currentSearchStrategy % trendingFeeds.length],
+                    offset: Math.floor(this.currentSearchStrategy / trendingFeeds.length) * 25
+                };
+                
+            case 2: // Posts feed
+                return {
+                    type: 'posts',
+                    sort: postSorts[this.currentSearchStrategy % postSorts.length],
+                    offset: Math.floor(this.currentSearchStrategy / postSorts.length) * 25
+                };
+                
+            case 3: // Multi-word search terms
+                const multiTerms = [
+                    'web app', 'cool game', 'art project', 'fun tool', 'new demo',
+                    'creative work', 'awesome site', 'cool design', 'fun app', 'new project',
+                    'amazing work', 'beautiful design', 'useful tool', 'interactive demo',
+                    'portfolio site', 'creative showcase', 'fun experiment', 'cool animation'
+                ];
+                return {
+                    type: 'search',
+                    term: encodeURIComponent(multiTerms[this.currentSearchStrategy % multiTerms.length]),
+                    sort: feedTypes[Math.floor(this.currentSearchStrategy / multiTerms.length) % feedTypes.length],
+                    offset: Math.floor(this.currentSearchStrategy / (multiTerms.length * feedTypes.length)) * 25
+                };
+                
+            case 4: // Random deep pagination on trending
+                return {
+                    type: 'trending',
+                    feed: trendingFeeds[this.currentSearchStrategy % trendingFeeds.length],
+                    offset: (50 + (this.currentSearchStrategy * 13)) % 500 // Skip around to avoid sequential
+                };
+                
+            case 5: // Random deep pagination on search
+                return {
+                    type: 'search',
+                    term: searchTerms[(this.currentSearchStrategy * 7) % searchTerms.length], // Use prime multiplier
+                    sort: feedTypes[(this.currentSearchStrategy * 3) % feedTypes.length],
+                    offset: (25 + (this.currentSearchStrategy * 17)) % 400 // Prime multiplier for randomness
+                };
+                
+            default:
+                return this.generateUniqueSearchConfig(); // Fallback
+        }
+    }
+
+    // New: Generate search key for tracking
+    getSearchKey(config) {
+        if (config.type === 'trending') {
+            return `trending_${config.feed}_${config.offset}`;
+        } else if (config.type === 'search') {
+            return `search_${config.sort}_${config.term}_${config.offset}`;
+        } else if (config.type === 'posts') {
+            return `posts_${config.sort}_${config.offset}`;
+        }
+        return `unknown_${JSON.stringify(config)}`;
+    }
+
+    // New: Expand search space when we run out of combinations
+    expandSearchSpace() {
+        console.log('🌟 Expanding search space with new strategies...');
+        
+        // Add more search terms dynamically
+        const additionalTerms = [
+            'prototype', 'beta', 'alpha', 'concept', 'idea', 'innovation', 'invention',
+            'creation', 'masterpiece', 'wonder', 'marvel', 'surprise', 'discovery',
+            'breakthrough', 'achievement', 'accomplishment', 'success', 'triumph'
+        ];
+        
+        // Reset some combinations to allow re-searching with different offsets
+        const keysToRemove = Array.from(this.searchedCombinations).filter(key => 
+            key.includes('_0') || key.includes('_25') || key.includes('_50')
+        ).slice(0, 50); // Remove first 50 early searches to allow re-searching with higher offsets
+        
+        keysToRemove.forEach(key => this.searchedCombinations.delete(key));
+        
+        console.log(`Cleared ${keysToRemove.length} early search combinations for re-searching`);
     }
 
     async loadProjects() {
@@ -399,28 +544,48 @@ class ResponsibleTippingFinder {
         this.updateStats();
     }
 
-    // New: Setup infinite scroll
+    // New: Setup infinite scroll with improved detection
     setupInfiniteScroll() {
         let scrollTimeout;
+        let lastScrollTop = 0;
         
-        window.addEventListener('scroll', () => {
+        const handleScroll = () => {
             clearTimeout(scrollTimeout);
             scrollTimeout = setTimeout(() => {
-                const scrollPosition = window.innerHeight + window.pageYOffset;
+                const scrollTop = window.pageYOffset;
+                const scrollPosition = window.innerHeight + scrollTop;
                 const documentHeight = document.documentElement.offsetHeight;
+                const scrollDirection = scrollTop > lastScrollTop ? 'down' : 'up';
                 
-                // If scrolled near bottom (within 1000px)
-                if (scrollPosition >= documentHeight - 1000) {
+                lastScrollTop = scrollTop;
+                
+                // If scrolled near bottom (within 800px) and scrolling down
+                if (scrollPosition >= documentHeight - 800 && scrollDirection === 'down') {
                     this.resumeScanning();
                 }
-            }, 150);
-        });
+                
+                // Also resume if user is actively scrolling and we don't have many projects queued
+                if (scrollDirection === 'down' && this.projectQueue.length < 5) {
+                    this.resumeScanning();
+                }
+            }, 100); // Faster response time
+        };
+        
+        window.addEventListener('scroll', handleScroll, { passive: true });
+        
+        // Also check periodically if we need more projects
+        setInterval(() => {
+            if (!this.isScanning && this.projectQueue.length < 3) {
+                console.log('🔄 Auto-resuming search - low project queue');
+                this.resumeScanning();
+            }
+        }, 5000);
     }
 
-    // New: Resume scanning when user scrolls
+    // New: Resume scanning with better queue management
     resumeScanning() {
-        if (!this.isScanning) {
-            console.log('👀 User scrolled - resuming search...');
+        if (!this.isScanning && this.projectQueue.length < 10) { // Only resume if queue is low
+            console.log('👀 Resuming search for more unique projects...');
             this.isScanning = true;
             this.pageSize += 12; // Increase page size
             
@@ -508,6 +673,8 @@ class ResponsibleTippingFinder {
         this.displayedProjectIds.clear();
         this.projectQueue = [];
         this.searchOffset = 0;
+        this.currentSearchStrategy = 0;
+        // Don't clear searchedCombinations to avoid immediate duplicates
         this.pageSize = 12;
         
         // Restart scanning
