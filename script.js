@@ -9,13 +9,44 @@ class ResponsibleTippingFinder {
         this.searchedCombinations = new Set(); // New: Track searched combinations
         this.pageSize = 12; // New: Projects per "page"
         this.currentSearchStrategy = 0; // New: Current search strategy index
+        this.testMode = false; // New: Test mode for debugging
+        this.scanStats = { // New: Detailed scan statistics
+            totalScanned: 0,
+            totalFiltered: 0,
+            gamblingFiltered: 0,
+            beggingFiltered: 0,
+            qualityFiltered: 0
+        };
         this.init();
     }
 
     async init() {
         this.setupEventListeners(); // Move this before loading
+        
+        // Check if test mode is enabled via URL parameter
+        const urlParams = new URLSearchParams(window.location.search);
+        this.testMode = urlParams.has('test');
+        
+        if (this.testMode) {
+            console.log('🧪 TEST MODE ENABLED - Enhanced logging active');
+            this.logTestModeInfo();
+        }
+        
         await this.startContinuousSearch();
         this.setupInfiniteScroll(); // New: Setup infinite scroll
+    }
+
+    // New: Log test mode information
+    logTestModeInfo() {
+        console.log('='.repeat(50));
+        console.log('🧪 RESPONSIBLE TIPPING FINDER - TEST MODE');
+        console.log('='.repeat(50));
+        console.log('📊 Tracking:');
+        console.log('  - Total projects scanned');
+        console.log('  - Projects filtered by category');
+        console.log('  - Search strategies used');
+        console.log('  - Queue management');
+        console.log('='.repeat(50));
     }
 
     // New: Start continuous search process
@@ -92,7 +123,7 @@ class ResponsibleTippingFinder {
                 }
                 
                 if (!response.ok) {
-                    console.log(`Search failed for ${searchKey}, trying next...`);
+                    if (this.testMode) console.log(`❌ Search failed for ${searchKey}, trying next...`);
                     searchAttempts++;
                     continue;
                 }
@@ -100,26 +131,38 @@ class ResponsibleTippingFinder {
                 const data = await response.json();
                 const newProjects = data.feed?.data || data.comments?.data || [];
                 
-                console.log(`Batch ${this.searchOffset}: Found ${newProjects.length} projects with config: ${searchKey}`);
+                if (this.testMode) {
+                    console.log(`📊 Batch ${this.searchOffset}: Found ${newProjects.length} projects with config: ${searchKey}`);
+                }
                 
                 // Filter this batch
                 let newProjectsAdded = 0;
                 for (const projectData of newProjects) {
+                    this.scanStats.totalScanned++;
+                    
                     // Handle different data structures
                     const project = projectData.project || projectData.comment?.card_data?.project;
                     const site = projectData.site || projectData.comment?.card_data?.site;
                     
                     if (project && !this.displayedProjectIds.has(project.id)) {
                         const fullProjectData = { project, site, ...projectData };
-                        if (await this.isDeservingProject(fullProjectData)) {
+                        const deserving = await this.isDeservingProject(fullProjectData);
+                        
+                        if (deserving) {
                             this.projectQueue.push(fullProjectData);
                             newProjectsAdded++;
-                            console.log(`✅ Found deserving project: ${project.title}`);
+                            if (this.testMode) {
+                                console.log(`✅ Found deserving project: ${project.title} (Views: ${project.stats?.views || 0}, Comments: ${project.stats?.comments || 0})`);
+                            }
                         }
                     }
                 }
                 
-                console.log(`Added ${newProjectsAdded} new deserving projects to queue`);
+                if (this.testMode) {
+                    console.log(`📈 Added ${newProjectsAdded} new deserving projects to queue`);
+                    console.log(`📊 Total Stats: Scanned: ${this.scanStats.totalScanned}, Queue: ${this.projectQueue.length}, Displayed: ${this.filteredProjects.length}`);
+                }
+                
                 this.searchOffset++;
                 searchExecuted = true;
                 
@@ -131,7 +174,7 @@ class ResponsibleTippingFinder {
         
         // If we couldn't find any unique searches, expand our search space
         if (!searchExecuted) {
-            console.log('🔄 Expanding search space - all combinations exhausted');
+            if (this.testMode) console.log('🔄 Expanding search space - all combinations exhausted');
             this.expandSearchSpace();
         }
     }
@@ -339,10 +382,16 @@ class ResponsibleTippingFinder {
     async isDeservingProject(projectData, filterLevel = 0) {
         const { project, site } = projectData;
         
-        if (!project || !site) return false;
+        if (!project || !site) {
+            if (this.testMode) console.log(`❌ Rejected: Missing project or site data`);
+            return false;
+        }
         
         // Skip if no title or deleted
-        if (!project.title || project.deleted_at) return false;
+        if (!project.title || project.deleted_at) {
+            if (this.testMode) console.log(`❌ Rejected: No title or deleted project`);
+            return false;
+        }
         
         const title = (project.title || '').toLowerCase();
         const description = (project.description || '').toLowerCase();
@@ -357,16 +406,28 @@ class ResponsibleTippingFinder {
                 const commentsData = await commentsResponse.json();
                 actualComments = commentsData.comments?.data || [];
                 commentAnalysis = await this.analyzeComments(actualComments);
+                
+                if (this.testMode && commentAnalysis.commentCount > 0) {
+                    console.log(`💬 Comments analyzed for "${project.title}": ${commentAnalysis.commentCount} comments, gambling: ${commentAnalysis.hasGamblingContent}, begging: ${commentAnalysis.hasBeggingContent}`);
+                }
             }
         } catch (error) {
-            console.log(`Could not fetch comments for project ${project.id}:`, error);
+            if (this.testMode) console.log(`⚠️ Could not fetch comments for project ${project.id}:`, error);
             // Fall back to stats if comment fetching fails
             const stats = project.stats || {};
             commentAnalysis.commentCount = stats.comments || 0;
         }
         
         // If comments contain gambling or begging content, reject
-        if (commentAnalysis.hasGamblingContent || commentAnalysis.hasBeggingContent) {
+        if (commentAnalysis.hasGamblingContent) {
+            this.scanStats.gamblingFiltered++;
+            if (this.testMode) console.log(`🎰 Rejected "${project.title}": Contains gambling content in comments`);
+            return false;
+        }
+        
+        if (commentAnalysis.hasBeggingContent) {
+            this.scanStats.beggingFiltered++;
+            if (this.testMode) console.log(`🙏 Rejected "${project.title}": Contains begging content in comments`);
             return false;
         }
         
@@ -378,25 +439,39 @@ class ResponsibleTippingFinder {
             badKeywords = [
                 'gamble', 'gambling', 'bet', 'betting', 'casino', 'lottery', 
                 'jackpot', 'prize money', 'win money', 'pay me now', 'donate money',
-                'tip to win', 'tip me please', 'send tips', 'give me credits'
+                'tip to win', 'tip me please', 'send tips', 'give me credits',
+                'pay to', 'pay to play', 'pay to win', 'pay to unlock', 'pay to access',
+                'pay to continue', 'pay to get', 'pay to see', 'pay to view',
+                'tipping', 'tip for', 'tip me', 'tips please', 'need tips',
+                'tip jar', 'tip button', 'accept tips', 'donations welcome',
+                '♦', 'diamond', 'credits for', 'coins for', 'tokens for'
             ];
         } else if (filterLevel === 1) {
-            // Moderate filter - only clear gambling terms
+            // Moderate filter - only clear gambling terms and pay-to patterns
             badKeywords = [
                 'gamble', 'gambling', 'casino', 'lottery', 'jackpot',
-                'tip to win', 'bet money'
+                'tip to win', 'bet money', 'pay to play', 'pay to win',
+                'tip me please', 'send tips', 'tipping', 'tip for',
+                '♦', 'credits for'
             ];
         } else {
-            // Loose filter - only obvious scams
-            badKeywords = ['scam', 'free money', 'guaranteed win'];
+            // Loose filter - only obvious scams and clear pay-to patterns
+            badKeywords = [
+                'scam', 'free money', 'guaranteed win', 'pay to win', 
+                'tip to win', '♦'
+            ];
         }
         
         // Check if project contains bad keywords
-        const containsBadKeywords = badKeywords.some(keyword => 
+        const foundBadKeyword = badKeywords.find(keyword => 
             title.includes(keyword) || description.includes(keyword)
         );
         
-        if (containsBadKeywords) return false;
+        if (foundBadKeyword) {
+            this.scanStats.qualityFiltered++;
+            if (this.testMode) console.log(`🚫 Rejected "${project.title}": Contains bad keyword "${foundBadKeyword}"`);
+            return false;
+        }
         
         // Look for quality indicators with progressively looser criteria
         const stats = project.stats || {};
@@ -405,30 +480,50 @@ class ResponsibleTippingFinder {
         const likes = stats.likes || 0;
         
         // Progressively looser filtering criteria
+        let passed = false;
+        let reason = '';
+        
         if (filterLevel === 0) {
             // Original strict criteria
             const commentToViewRatio = views > 0 ? comments / views : 0;
-            return views > 10 && 
-                   views < 10000 && 
-                   comments < 50 && 
-                   commentToViewRatio < 0.1 && 
-                   title.length > 3 && 
-                   this.seemsLikeQualityProject(title, description);
+            passed = views > 10 && 
+                    views < 10000 && 
+                    comments < 50 && 
+                    commentToViewRatio < 0.1 && 
+                    title.length > 3 && 
+                    this.seemsLikeQualityProject(title, description);
+            reason = 'Strict criteria';
         } else if (filterLevel === 1) {
             // Moderate criteria
-            return views > 5 && 
-                   views < 50000 && 
-                   comments < 100 && 
-                   likes < 200 &&
-                   title.length > 2 && 
-                   this.seemsLikeQualityProject(title, description, true);
+            passed = views > 5 && 
+                    views < 50000 && 
+                    comments < 100 && 
+                    likes < 200 &&
+                    title.length > 2 && 
+                    this.seemsLikeQualityProject(title, description, true);
+            reason = 'Moderate criteria';
         } else {
             // Loose criteria - just needs to not be obvious garbage
-            return views > 0 && 
-                   title.length > 2 && 
-                   (this.seemsLikeQualityProject(title, description, true) || 
-                    views > 50); // High views indicate some quality
+            passed = views > 0 && 
+                    title.length > 2 && 
+                    (this.seemsLikeQualityProject(title, description, true) || 
+                     views > 50); // High views indicate some quality
+            reason = 'Loose criteria';
         }
+        
+        if (this.testMode) {
+            if (passed) {
+                console.log(`✅ PASSED "${project.title}" (${reason}): Views: ${views}, Comments: ${comments}, Likes: ${likes}`);
+            } else {
+                console.log(`❌ Failed "${project.title}" (${reason}): Views: ${views}, Comments: ${comments}, Likes: ${likes}`);
+            }
+        }
+        
+        if (passed) {
+            this.scanStats.totalFiltered++;
+        }
+        
+        return passed;
     }
 
     async analyzeComments(comments) {
@@ -440,12 +535,15 @@ class ResponsibleTippingFinder {
         
         const gamblingKeywords = [
             'gamble', 'gambling', 'bet', 'betting', 'casino', 'lottery',
-            'jackpot', 'prize money', 'win money', 'tip to win', 'bet money'
+            'jackpot', 'prize money', 'win money', 'tip to win', 'bet money',
+            'pay to play', 'pay to win', '♦'
         ];
         
         const beggingKeywords = [
             'tip me please', 'send tips', 'give me credits', 'donate money',
-            'pay me now', 'need tips', 'tip for more', 'credits please'
+            'pay me now', 'need tips', 'tip for more', 'credits please',
+            'tipping', 'tip me', 'tip jar', 'donations welcome', 'accept tips',
+            'pay to', 'pay for access', 'pay to see', 'pay to continue'
         ];
         
         for (const commentData of comments) {
@@ -654,8 +752,13 @@ class ResponsibleTippingFinder {
     // New: Update stats display
     updateStats() {
         const stats = document.getElementById('filter-stats');
-        const totalScanned = this.searchOffset * 25;
-        stats.textContent = `Found ${this.filteredProjects.length} deserving projects • Scanned ${totalScanned}+ projects`;
+        const totalScanned = this.scanStats.totalScanned;
+        
+        if (this.testMode) {
+            stats.textContent = `Found ${this.filteredProjects.length} deserving projects • Scanned ${totalScanned} • Filtered: G:${this.scanStats.gamblingFiltered} B:${this.scanStats.beggingFiltered} Q:${this.scanStats.qualityFiltered}`;
+        } else {
+            stats.textContent = `Found ${this.filteredProjects.length} deserving projects • Scanned ${totalScanned}+ projects`;
+        }
     }
 
     // New: Utility sleep function
