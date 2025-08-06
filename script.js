@@ -114,6 +114,29 @@ class ResponsibleTippingFinder {
         const title = (project.title || '').toLowerCase();
         const description = (project.description || '').toLowerCase();
         
+        // Fetch actual comments to analyze content
+        let actualComments = [];
+        let commentAnalysis = { hasGamblingContent: false, hasBeggingContent: false, commentCount: 0 };
+        
+        try {
+            const commentsResponse = await fetch(`/api/v1/projects/${project.id}/comments?limit=20`);
+            if (commentsResponse.ok) {
+                const commentsData = await commentsResponse.json();
+                actualComments = commentsData.comments?.data || [];
+                commentAnalysis = await this.analyzeComments(actualComments);
+            }
+        } catch (error) {
+            console.log(`Could not fetch comments for project ${project.id}:`, error);
+            // Fall back to stats if comment fetching fails
+            const stats = project.stats || {};
+            commentAnalysis.commentCount = stats.comments || 0;
+        }
+        
+        // If comments contain gambling or begging content, reject
+        if (commentAnalysis.hasGamblingContent || commentAnalysis.hasBeggingContent) {
+            return false;
+        }
+        
         // Progressively looser bad keyword filtering
         let badKeywords = [];
         
@@ -145,7 +168,7 @@ class ResponsibleTippingFinder {
         // Look for quality indicators with progressively looser criteria
         const stats = project.stats || {};
         const views = stats.views || 0;
-        const comments = stats.comments || 0;
+        const comments = commentAnalysis.commentCount;
         const likes = stats.likes || 0;
         
         // Progressively looser filtering criteria
@@ -173,6 +196,48 @@ class ResponsibleTippingFinder {
                    (this.seemsLikeQualityProject(title, description, true) || 
                     views > 50); // High views indicate some quality
         }
+    }
+
+    async analyzeComments(comments) {
+        const analysis = {
+            hasGamblingContent: false,
+            hasBeggingContent: false,
+            commentCount: comments.length
+        };
+        
+        const gamblingKeywords = [
+            'gamble', 'gambling', 'bet', 'betting', 'casino', 'lottery',
+            'jackpot', 'prize money', 'win money', 'tip to win', 'bet money'
+        ];
+        
+        const beggingKeywords = [
+            'tip me please', 'send tips', 'give me credits', 'donate money',
+            'pay me now', 'need tips', 'tip for more', 'credits please'
+        ];
+        
+        for (const commentData of comments) {
+            const comment = commentData.comment;
+            if (!comment || !comment.raw_content) continue;
+            
+            const content = comment.raw_content.toLowerCase();
+            
+            // Check for gambling content
+            if (gamblingKeywords.some(keyword => content.includes(keyword))) {
+                analysis.hasGamblingContent = true;
+            }
+            
+            // Check for begging content
+            if (beggingKeywords.some(keyword => content.includes(keyword))) {
+                analysis.hasBeggingContent = true;
+            }
+            
+            // Early exit if we found problematic content
+            if (analysis.hasGamblingContent && analysis.hasBeggingContent) {
+                break;
+            }
+        }
+        
+        return analysis;
     }
 
     seemsLikeQualityProject(title, description, relaxed = false) {
