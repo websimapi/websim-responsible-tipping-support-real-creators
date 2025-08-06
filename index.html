@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Responsible Tipping - Support Real Creators</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="loading-screen">
+        <div class="loading-content">
+            <div class="anti-gambling-message">
+                <h1>🚫 NO to Tip Gambling</h1>
+                <h2>✅ YES to Supporting Real Creators</h2>
+                <div class="principles">
+                    <div class="principle">
+                        <span class="icon">🎯</span>
+                        <span>Finding quality projects with low tips</span>
+                    </div>
+                    <div class="principle">
+                        <span class="icon">🔍</span>
+                        <span>Filtering out gambling & tip-begging</span>
+                    </div>
+                    <div class="principle">
+                        <span class="icon">💎</span>
+                        <span>Highlighting underappreciated creators</span>
+                    </div>
+                </div>
+            </div>
+            <div class="loader">
+                <div class="spinner"></div>
+                <p>Scanning for deserving projects...</p>
+            </div>
+        </div>
+    </div>
+
+    <div id="project-showcase" style="display: none;">
+        <div class="header">
+            <h1>🌟 Discover Underappreciated Creators</h1>
+            <p>These projects show real effort but haven't received many tips. Consider supporting them!</p>
+            <div class="stats" id="filter-stats"></div>
+        </div>
+        
+        <div class="project-grid" id="project-grid">
+            <!-- Projects will be populated here -->
+        </div>
+
+        <div class="refresh-section">
+            <button id="refresh-btn" class="refresh-btn">🔄 Find More Deserving Projects</button>
+        </div>
+    </div>
+
+    <div id="fullscreen-iframe" class="fullscreen-iframe" style="display: none;">
+        <div class="iframe-header">
+            <button id="back-btn" class="back-btn">← Back to Discovery</button>
+            <span class="iframe-title"></span>
+        </div>
+        <iframe id="project-frame" src="" frameborder="0"></iframe>
+    </div>
+
+    <script type="module" src="script.js"></script>
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516" integrity="sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==" data-cf-beacon='{"version":"2024.11.0","token":"4c6229722a6346bc8eb5cb0e5eae5d41","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+</body>
+</html>
+
