@@ -2,13 +2,101 @@ class ResponsibleTippingFinder {
     constructor() {
         this.projects = [];
         this.filteredProjects = [];
+        this.projectQueue = []; // New: Queue for found projects
+        this.isScanning = false; // New: Track scanning state
+        this.searchOffset = 0; // New: Track search progression
+        this.displayedProjectIds = new Set(); // New: Track displayed projects
+        this.pageSize = 12; // New: Projects per "page"
         this.init();
     }
 
     async init() {
-        await this.loadProjects();
-        this.renderProjects();
-        this.setupEventListeners();
+        this.setupEventListeners(); // Move this before loading
+        await this.startContinuousSearch();
+        this.setupInfiniteScroll(); // New: Setup infinite scroll
+    }
+
+    // New: Start continuous search process
+    async startContinuousSearch() {
+        this.isScanning = true;
+        this.showLoadingScreen();
+        
+        // Start the scanning process
+        this.continuousSearch();
+    }
+
+    // New: Continuous search that runs in background
+    async continuousSearch() {
+        while (this.isScanning) {
+            try {
+                await this.searchBatch();
+                
+                // Add found projects to display if page has room
+                while (this.projectQueue.length > 0 && this.canAddMoreToPage()) {
+                    const projectData = this.projectQueue.shift();
+                    this.addProjectToDisplay(projectData);
+                }
+                
+                // Hide loading screen once we have some projects
+                if (this.filteredProjects.length > 0) {
+                    this.hideLoadingScreen();
+                }
+                
+                // Pause if page is full, otherwise continue
+                if (!this.canAddMoreToPage()) {
+                    this.pauseScanning();
+                } else {
+                    // Brief pause between searches
+                    await this.sleep(1000);
+                }
+                
+            } catch (error) {
+                console.error('Error in continuous search:', error);
+                await this.sleep(2000); // Wait before retrying
+            }
+        }
+    }
+
+    // New: Search a batch of projects
+    async searchBatch() {
+        const batchSize = 25;
+        const searchTerms = ['game', 'art', 'tool', 'creative', 'portfolio', 'demo', 'experiment', 'design', 'simulator', 'fun', 'interactive', 'visual', 'cool', 'amazing', 'awesome'];
+        
+        // Rotate through search terms
+        const termIndex = Math.floor(this.searchOffset / 2) % searchTerms.length;
+        const term = searchTerms[termIndex];
+        
+        try {
+            // Try different feed types
+            const feedTypes = ['newest', 'best', 'hot'];
+            const feedType = feedTypes[this.searchOffset % feedTypes.length];
+            
+            let response;
+            if (this.searchOffset % 4 === 0) {
+                // Every 4th search, use trending
+                response = await fetch(`/api/v1/feed/trending?limit=${batchSize}&offset=${Math.floor(this.searchOffset / 4) * batchSize}`);
+            } else {
+                response = await fetch(`/api/v1/feed/search/${feedType}/${term}?limit=${batchSize}&offset=${Math.floor(this.searchOffset / 3) * batchSize}`);
+            }
+            
+            const data = await response.json();
+            const newProjects = data.feed?.data || [];
+            
+            console.log(`Batch ${this.searchOffset}: Found ${newProjects.length} projects with term "${term}" (${feedType})`);
+            
+            // Filter this batch
+            for (const projectData of newProjects) {
+                if (!this.displayedProjectIds.has(projectData.project?.id) && await this.isDeservingProject(projectData)) {
+                    this.projectQueue.push(projectData);
+                    console.log(`✅ Found deserving project: ${projectData.project.title}`);
+                }
+            }
+            
+            this.searchOffset++;
+            
+        } catch (error) {
+            console.error('Error in search batch:', error);
+        }
     }
 
     async loadProjects() {
@@ -274,45 +362,156 @@ class ResponsibleTippingFinder {
         });
     }
 
-    renderProjects() {
+    // New: Check if we can add more projects to the current page
+    canAddMoreToPage() {
+        return this.filteredProjects.length < this.pageSize;
+    }
+
+    // New: Add project to display immediately
+    addProjectToDisplay(projectData) {
+        if (this.displayedProjectIds.has(projectData.project.id)) return;
+        
+        this.filteredProjects.push(projectData);
+        this.displayedProjectIds.add(projectData.project.id);
+        
+        const grid = document.getElementById('project-grid');
+        const card = this.createProjectCard(projectData);
+        
+        // Remove no-projects message if it exists
+        const noProjectsMsg = grid.querySelector('.no-projects-message');
+        if (noProjectsMsg) {
+            noProjectsMsg.remove();
+        }
+        
+        // Add with animation
+        card.style.opacity = '0';
+        card.style.transform = 'translateY(20px)';
+        grid.appendChild(card);
+        
+        // Animate in
+        setTimeout(() => {
+            card.style.transition = 'opacity 0.5s ease, transform 0.5s ease';
+            card.style.opacity = '1';
+            card.style.transform = 'translateY(0)';
+        }, 100);
+        
+        // Update stats
+        this.updateStats();
+    }
+
+    // New: Setup infinite scroll
+    setupInfiniteScroll() {
+        let scrollTimeout;
+        
+        window.addEventListener('scroll', () => {
+            clearTimeout(scrollTimeout);
+            scrollTimeout = setTimeout(() => {
+                const scrollPosition = window.innerHeight + window.pageYOffset;
+                const documentHeight = document.documentElement.offsetHeight;
+                
+                // If scrolled near bottom (within 1000px)
+                if (scrollPosition >= documentHeight - 1000) {
+                    this.resumeScanning();
+                }
+            }, 150);
+        });
+    }
+
+    // New: Resume scanning when user scrolls
+    resumeScanning() {
+        if (!this.isScanning) {
+            console.log('👀 User scrolled - resuming search...');
+            this.isScanning = true;
+            this.pageSize += 12; // Increase page size
+            
+            // Show scanning indicator
+            this.showScanningIndicator();
+            
+            // Resume search
+            this.continuousSearch();
+        }
+    }
+
+    // New: Pause scanning
+    pauseScanning() {
+        this.isScanning = false;
+        this.hideScanningIndicator();
+        console.log('⏸️ Page full - pausing search. Scroll down for more!');
+    }
+
+    // New: Show scanning indicator
+    showScanningIndicator() {
+        const grid = document.getElementById('project-grid');
+        let indicator = document.getElementById('scanning-indicator');
+        
+        if (!indicator) {
+            indicator = document.createElement('div');
+            indicator.id = 'scanning-indicator';
+            indicator.className = 'scanning-indicator';
+            indicator.innerHTML = `
+                <div class="spinner"></div>
+                <p>🔍 Deep scanning for more deserving projects...</p>
+            `;
+            grid.appendChild(indicator);
+        }
+        
+        indicator.style.display = 'block';
+    }
+
+    // New: Hide scanning indicator
+    hideScanningIndicator() {
+        const indicator = document.getElementById('scanning-indicator');
+        if (indicator) {
+            indicator.style.display = 'none';
+        }
+    }
+
+    // New: Show loading screen
+    showLoadingScreen() {
         const loadingScreen = document.getElementById('loading-screen');
         const showcase = document.getElementById('project-showcase');
-        const grid = document.getElementById('project-grid');
-        const stats = document.getElementById('filter-stats');
         
-        // Hide loading screen
+        loadingScreen.style.display = 'flex';
+        showcase.style.display = 'none';
+    }
+
+    // New: Hide loading screen
+    hideLoadingScreen() {
+        const loadingScreen = document.getElementById('loading-screen');
+        const showcase = document.getElementById('project-showcase');
+        
         setTimeout(() => {
             loadingScreen.style.display = 'none';
             showcase.style.display = 'block';
-        }, 2000);
+        }, 1000);
+    }
+
+    // New: Update stats display
+    updateStats() {
+        const stats = document.getElementById('filter-stats');
+        const totalScanned = this.searchOffset * 25;
+        stats.textContent = `Found ${this.filteredProjects.length} deserving projects • Scanned ${totalScanned}+ projects`;
+    }
+
+    // New: Utility sleep function
+    sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    renderProjects() {
+        // This method is now mainly for the refresh button
+        const grid = document.getElementById('project-grid');
         
-        // Update stats with more encouraging message
-        if (this.filteredProjects.length > 0) {
-            stats.textContent = `Found ${this.filteredProjects.length} deserving projects out of ${this.projects.length} scanned`;
-        } else {
-            stats.textContent = `Still searching for deserving projects... scanned ${this.projects.length} so far`;
-        }
-        
-        // Clear grid
+        // Clear grid and reset
         grid.innerHTML = '';
+        this.filteredProjects = [];
+        this.displayedProjectIds.clear();
+        this.projectQueue = [];
+        this.searchOffset = 0;
+        this.pageSize = 12;
         
-        if (this.filteredProjects.length === 0) {
-            // Show message if no projects found
-            const message = document.createElement('div');
-            message.className = 'no-projects-message';
-            message.innerHTML = `
-                <h3>🔍 Still Searching...</h3>
-                <p>We're being very selective to find truly deserving projects.</p>
-                <p>Click "Find More" to expand the search!</p>
-            `;
-            grid.appendChild(message);
-        } else {
-            // Render projects
-            this.filteredProjects.forEach(projectData => {
-                const card = this.createProjectCard(projectData);
-                grid.appendChild(card);
-            });
-        }
+        // Restart scanning
+        this.startContinuousSearch();
     }
 
     createProjectCard(projectData) {
@@ -390,13 +589,17 @@ class ResponsibleTippingFinder {
         });
         
         refreshBtn.addEventListener('click', async () => {
-            refreshBtn.textContent = '🔄 Scanning...';
+            refreshBtn.textContent = '🔄 Restarting Deep Scan...';
             refreshBtn.disabled = true;
             
-            await this.loadProjects();
+            // Stop current scanning
+            this.isScanning = false;
+            
+            await this.sleep(500); // Brief pause
+            
             this.renderProjects();
             
-            refreshBtn.textContent = '🔄 Find More Deserving Projects';
+            refreshBtn.textContent = '🔄 Restart Deep Scan';
             refreshBtn.disabled = false;
         });
         
