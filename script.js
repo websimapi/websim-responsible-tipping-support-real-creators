@@ -51,20 +51,59 @@ class ResponsibleTippingFinder {
     }
 
     async filterDeservingProjects() {
-        const filteredProjects = [];
+        let filteredProjects = [];
+        let attemptCount = 0;
         
-        for (const projectData of this.projects) {
-            if (await this.isDeservingProject(projectData)) {
-                filteredProjects.push(projectData);
+        // Try progressively looser filters until we find projects
+        while (filteredProjects.length === 0 && attemptCount < 3) {
+            filteredProjects = [];
+            
+            for (const projectData of this.projects) {
+                if (await this.isDeservingProject(projectData, attemptCount)) {
+                    filteredProjects.push(projectData);
+                }
+            }
+            
+            attemptCount++;
+            
+            // If still no results, try loading more projects
+            if (filteredProjects.length === 0 && attemptCount < 3) {
+                console.log(`Attempt ${attemptCount}: No projects found, expanding search...`);
+                await this.expandSearch();
             }
         }
         
         // Remove duplicates and limit results
         this.filteredProjects = this.removeDuplicates(filteredProjects).slice(0, 12);
-        console.log(`Filtered to ${this.filteredProjects.length} deserving projects`);
+        console.log(`Filtered to ${this.filteredProjects.length} deserving projects after ${attemptCount} attempts`);
     }
 
-    async isDeservingProject(projectData) {
+    async expandSearch() {
+        try {
+            // Add more search terms for creative projects
+            const additionalTerms = ['design', 'simulator', 'fun', 'interactive', 'visual', 'cool', 'amazing', 'awesome'];
+            const additionalProjects = [];
+            
+            for (const term of additionalTerms) {
+                const response = await fetch(`/api/v1/feed/search/best/${term}?limit=25`);
+                const data = await response.json();
+                additionalProjects.push(...data.feed.data);
+            }
+            
+            // Also try getting more from trending with different parameters
+            const trendingResponse = await fetch('/api/v1/feed/trending?limit=100&feed=hot');
+            const trendingData = await trendingResponse.json();
+            additionalProjects.push(...trendingData.feed.data);
+            
+            this.projects = [...this.projects, ...additionalProjects];
+            console.log(`Expanded search to ${this.projects.length} total projects`);
+            
+        } catch (error) {
+            console.error('Error expanding search:', error);
+        }
+    }
+
+    async isDeservingProject(projectData, filterLevel = 0) {
         const { project, site } = projectData;
         
         if (!project || !site) return false;
@@ -75,53 +114,89 @@ class ResponsibleTippingFinder {
         const title = (project.title || '').toLowerCase();
         const description = (project.description || '').toLowerCase();
         
-        // Filter out gambling and tip-begging projects
-        const badKeywords = [
-            'tip', 'gamble', 'gambling', 'bet', 'betting', 'casino', 'lottery', 
-            'jackpot', 'prize', 'win money', 'pay me', 'donate', 'giveaway',
-            'tip to win', 'tip me', 'send tips', 'credit', 'coins', 'reward',
-            'payout', 'cash', 'money', 'fund', 'support me'
-        ];
+        // Progressively looser bad keyword filtering
+        let badKeywords = [];
         
-        // Check if project contains gambling/begging keywords
+        if (filterLevel === 0) {
+            // Strict filter - only obvious gambling/begging
+            badKeywords = [
+                'gamble', 'gambling', 'bet', 'betting', 'casino', 'lottery', 
+                'jackpot', 'prize money', 'win money', 'pay me now', 'donate money',
+                'tip to win', 'tip me please', 'send tips', 'give me credits'
+            ];
+        } else if (filterLevel === 1) {
+            // Moderate filter - only clear gambling terms
+            badKeywords = [
+                'gamble', 'gambling', 'casino', 'lottery', 'jackpot',
+                'tip to win', 'bet money'
+            ];
+        } else {
+            // Loose filter - only obvious scams
+            badKeywords = ['scam', 'free money', 'guaranteed win'];
+        }
+        
+        // Check if project contains bad keywords
         const containsBadKeywords = badKeywords.some(keyword => 
             title.includes(keyword) || description.includes(keyword)
         );
         
         if (containsBadKeywords) return false;
         
-        // Look for quality indicators
+        // Look for quality indicators with progressively looser criteria
         const stats = project.stats || {};
         const views = stats.views || 0;
         const comments = stats.comments || 0;
+        const likes = stats.likes || 0;
         
-        // Filter criteria:
-        // - Has some views (shows it's been seen) but not too many comments
-        // - Low comment to view ratio (indicates underappreciated)
-        // - Has a proper title and seems like actual content
-        const commentToViewRatio = views > 0 ? comments / views : 0;
-        
-        return views > 10 && // Has some engagement
-               views < 10000 && // Not already super popular
-               comments < 50 && // Low comments
-               commentToViewRatio < 0.1 && // Low comment ratio
-               title.length > 3 && // Has a real title
-               this.seemsLikeQualityProject(title, description);
+        // Progressively looser filtering criteria
+        if (filterLevel === 0) {
+            // Original strict criteria
+            const commentToViewRatio = views > 0 ? comments / views : 0;
+            return views > 10 && 
+                   views < 10000 && 
+                   comments < 50 && 
+                   commentToViewRatio < 0.1 && 
+                   title.length > 3 && 
+                   this.seemsLikeQualityProject(title, description);
+        } else if (filterLevel === 1) {
+            // Moderate criteria
+            return views > 5 && 
+                   views < 50000 && 
+                   comments < 100 && 
+                   likes < 200 &&
+                   title.length > 2 && 
+                   this.seemsLikeQualityProject(title, description, true);
+        } else {
+            // Loose criteria - just needs to not be obvious garbage
+            return views > 0 && 
+                   title.length > 2 && 
+                   (this.seemsLikeQualityProject(title, description, true) || 
+                    views > 50); // High views indicate some quality
+        }
     }
 
-    seemsLikeQualityProject(title, description) {
+    seemsLikeQualityProject(title, description, relaxed = false) {
         // Look for indicators of quality/effort
         const qualityKeywords = [
             'game', 'art', 'tool', 'portfolio', 'demo', 'experiment', 'creative',
             'interactive', 'animation', 'music', 'sound', 'design', 'code',
             'learn', 'tutorial', 'educational', 'simulation', 'visualization',
-            'generator', 'calculator', 'dashboard', 'app', 'website', 'blog'
+            'generator', 'calculator', 'dashboard', 'app', 'website', 'blog',
+            'fun', 'cool', 'awesome', 'amazing', 'beautiful', 'simple', 'useful'
         ];
         
         const text = title + ' ' + description;
         
-        return qualityKeywords.some(keyword => text.includes(keyword)) ||
-               title.length > 10; // At least a descriptive title
+        const hasQualityKeyword = qualityKeywords.some(keyword => text.includes(keyword));
+        const hasDecentTitle = title.length > (relaxed ? 5 : 10);
+        
+        if (relaxed) {
+            // More lenient - just needs decent length or quality keyword
+            return hasQualityKeyword || hasDecentTitle;
+        } else {
+            // Original criteria
+            return hasQualityKeyword || hasDecentTitle;
+        }
     }
 
     removeDuplicates(projects) {
@@ -146,17 +221,33 @@ class ResponsibleTippingFinder {
             showcase.style.display = 'block';
         }, 2000);
         
-        // Update stats
-        stats.textContent = `Found ${this.filteredProjects.length} deserving projects out of ${this.projects.length} scanned`;
+        // Update stats with more encouraging message
+        if (this.filteredProjects.length > 0) {
+            stats.textContent = `Found ${this.filteredProjects.length} deserving projects out of ${this.projects.length} scanned`;
+        } else {
+            stats.textContent = `Still searching for deserving projects... scanned ${this.projects.length} so far`;
+        }
         
         // Clear grid
         grid.innerHTML = '';
         
-        // Render projects
-        this.filteredProjects.forEach(projectData => {
-            const card = this.createProjectCard(projectData);
-            grid.appendChild(card);
-        });
+        if (this.filteredProjects.length === 0) {
+            // Show message if no projects found
+            const message = document.createElement('div');
+            message.className = 'no-projects-message';
+            message.innerHTML = `
+                <h3>🔍 Still Searching...</h3>
+                <p>We're being very selective to find truly deserving projects.</p>
+                <p>Click "Find More" to expand the search!</p>
+            `;
+            grid.appendChild(message);
+        } else {
+            // Render projects
+            this.filteredProjects.forEach(projectData => {
+                const card = this.createProjectCard(projectData);
+                grid.appendChild(card);
+            });
+        }
     }
 
     createProjectCard(projectData) {
@@ -258,4 +349,3 @@ class ResponsibleTippingFinder {
 document.addEventListener('DOMContentLoaded', () => {
     new ResponsibleTippingFinder();
 });
-
